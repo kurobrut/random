@@ -146,26 +146,24 @@ async def send_embed(channel, title, description, color, mention_everyone=False)
     else:
         await channel.send(embed=embed)
 
-async def check_players():
-    global previous_data
-    await bot.wait_until_ready()
-    channel = bot.get_channel(CHANNEL_ID)
+def check_players():
+        global notified_pair
 
-    id_list = list(target_users.values())
-    if not id_list:
-        return
+        id_list = list(target_users.values())
+        if not id_list:
+            print("[Warning] No valid user IDs to check")
+            return
 
-    res = safe_request(
-        "POST",
-        "https://presence.roblox.com/v1/presence/users",
-        json={"userIds": id_list},
-        headers=HEADERS
-    )
-    if not res or res.status_code != 200:
-        return
+        res = safe_request("POST", "https://presence.roblox.com/v1/presence/users",
+                           json={"userIds": id_list}, headers=HEADERS)
+        if not res or res.status_code != 200:
+            print("[Error] Presence API failed")
+            return
 
-    response = res.json()
-    final_statuses = {}
+        response = res.json()
+        users_in_games = {}
+        presences = {}
+        place_ids = {}
 
     # Prepare statuses
     for presence in response.get("userPresences", []):
