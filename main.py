@@ -169,12 +169,12 @@ async def check_players():
 
     # Prepare statuses
     for presence in response.get("userPresences", []):
-    uid = presence["userId"]
-    friendly_name = next((name for name, id_ in target_users.items() if id_ == uid), f"User_{uid}")
-    username = get_username(uid)
-    presence_type = presence.get("userPresenceType")
-    game_id = presence.get("gameId")
-    place_id = presence.get("placeId")
+        uid = presence["userId"]
+        friendly_name = next((name for name, id_ in target_users.items() if id_ == uid), f"User_{uid}")
+        username = get_username(uid)
+        presence_type = presence.get("userPresenceType")
+        game_id = presence.get("gameId")
+        place_id = presence.get("placeId")
 
     status = ""
     color = COLORS["offline"]
