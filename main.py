@@ -5,6 +5,7 @@ import urllib3
 import os
 import random
 import json
+import time
 from datetime import datetime, timezone
 import asyncio
 
@@ -20,7 +21,6 @@ if not BOT_TOKEN or not CHANNEL_ID:
     raise RuntimeError("Missing BOT_TOKEN or CHANNEL_ID environment variable!")
 
 CHANNEL_ID = int(CHANNEL_ID)
-
 HEADERS = {"Cookie": f".ROBLOSECURITY={COOKIE}", "Content-Type": "application/json"} if COOKIE else {}
 
 # ===== TARGET USERS =====
@@ -67,26 +67,24 @@ def safe_request(method, url, **kwargs):
     while True:
         try:
             r = requests.request(method, url, verify=False, timeout=10, **kwargs)
-            # Handle rate limits
             if r.status_code == 429 or r.headers.get("x-ratelimit-remaining") == "0":
                 reset_time = int(r.headers.get("x-ratelimit-reset", 2))
                 wait = reset_time + random.uniform(0.5, 1.5)
                 print(f"[Rate Limit] Waiting {wait:.1f}s... ({url})")
-                asyncio.run(asyncio.sleep(wait))
+                time.sleep(wait)
                 continue
-            # Handle server errors
             if 500 <= r.status_code < 600:
                 wait = min(base_delay * (2 ** retries), max_delay) + random.uniform(0, 1)
                 print(f"[Server Error {r.status_code}] Retrying in {wait:.1f}s... ({url})")
                 retries += 1
-                asyncio.run(asyncio.sleep(wait))
+                time.sleep(wait)
                 continue
             return r
         except requests.RequestException as e:
             wait = min(base_delay * (2 ** retries), max_delay) + random.uniform(0, 1)
             print(f"[Request Error] {e} - Retrying in {wait:.1f}s... ({url})")
             retries += 1
-            asyncio.run(asyncio.sleep(wait))
+            time.sleep(wait)
 
 # ===== USERNAME LOOKUP =====
 def get_username(user_id):
@@ -101,7 +99,7 @@ def get_game_name_from_place(place_id):
     place_id = str(place_id)
     if place_id in place_cache and place_cache[place_id]["placeName"] != "Unknown Game":
         return place_cache[place_id]["placeName"], place_cache[place_id]["url"]
-    
+
     url = f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={place_id}"
     res = safe_request("GET", url, headers=HEADERS)
     if res and res.status_code == 200:
@@ -122,7 +120,7 @@ def get_game_name_from_place(place_id):
             }
             save_cache()
             return game_name, game_url
-    # Fallback unknown game
+
     place_cache[place_id] = {
         "placeId": place_id,
         "placeName": "Unknown Game",
@@ -159,13 +157,13 @@ async def check_players_loop():
         if not id_list:
             await asyncio.sleep(20)
             continue
-        
+
         res = safe_request("POST", "https://presence.roblox.com/v1/presence/users",
                            json={"userIds": id_list}, headers=HEADERS)
         if not res or res.status_code != 200:
             await asyncio.sleep(20)
             continue
-        
+
         response = res.json()
         users_in_games = {}
         presences = {}
@@ -181,23 +179,23 @@ async def check_players_loop():
             status = ""
             color = COLORS["offline"]
 
-            if presence_type in [2,3]:  # In game
+            if presence_type in [2,3]:
                 game_name, game_url = get_game_name_from_place(place_id) if place_id else ("Unknown Game", "")
                 status = f"🎮 {username} is playing: {game_name}\n🔗 {game_url}"
                 color = COLORS["playing"]
                 if game_id:
                     users_in_games[friendly_name] = game_id
                     place_ids[friendly_name] = place_id
-            elif presence_type == 1:  # Online, not in game
+            elif presence_type == 1:
                 status = f"🟢 {username} is online (not in game)"
                 color = COLORS["online"]
-            elif presence_type == 0:  # Offline
+            elif presence_type == 0:
                 status = f"🔴 {username} is offline"
                 color = COLORS["offline"]
-            
+
             presences[friendly_name] = (status, presence_type, color)
 
-        # Same server check for "kei_lanii44"
+        # Same server check
         main_user = "kei_lanii44"
         if main_user in users_in_games:
             same_server_players = {other for other, gid in users_in_games.items() if other != main_user and gid == users_in_games[main_user]}
