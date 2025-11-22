@@ -224,6 +224,6 @@ async def check_players():
 @bot.event
 async def on_ready():
     print(f"[Bot] Logged in as {bot.user}")
-    bot.loop.create_task(check_players_loop())
+    bot.loop.create_task(check_players())
 
 bot.run(BOT_TOKEN)
