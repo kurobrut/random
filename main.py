@@ -187,10 +187,7 @@ async def check_players():
 
             if presence_type in [2, 3]:
                 game_name, game_url = get_game_name_from_place(place_id) if place_id else ("Unknown Game", "")
-                status = (
-                    f"🎮 {username} is playing: {game_name}\n"
-                    f"🔗 {game_url}\n"
-                )
+                status = f"🎮 {username} is playing: {game_name}\n🔗 {game_url}"
                 color = COLORS["playing"]
                 if game_id:
                     users_in_games[friendly_name] = game_id
@@ -205,27 +202,23 @@ async def check_players():
             presences[friendly_name] = (status, presence_type, color)
 
         # === Same server check for kei_lanii44 ===
-        a = "kei_lanii44"
-        if a in users_in_games:
+        main_user = "kei_lanii44"
+        if main_user in users_in_games:
             same_server_players = {
                 other for other, gid in users_in_games.items()
-                if other != a and gid == users_in_games[a]
+                if other != main_user and gid == users_in_games[main_user]
             }
 
             if same_server_players:
-                game_name, game_url = get_game_name_from_place(place_ids[a]) if a in place_ids else ("Unknown Game", "")
+                game_name, game_url = get_game_name_from_place(place_ids[main_user]) if main_user in place_ids else ("Unknown Game", "")
                 players_signature = tuple(sorted(same_server_players))
                 if previous_data.get("same_server") != players_signature:
                     others_list = ", ".join(same_server_players)
-                    description = (
-                        f"{a} is in the same server with:\n"
-                        f"👥 {others_list}\n\n"
-                        f"🎮 Game: {game_name}\n🔗 {game_url}"
-                    )
-                    send_embed("🎯 Target Match", description, COLORS["same_server"], mention_everyone=True)
+                    description = f"{main_user} is in the same server with:\n👥 {others_list}\n\n🎮 Game: {game_name}\n🔗 {game_url}"
+                    await send_embed(channel, "🎯 Target Match", description, COLORS["same_server"], mention_everyone=True)
                     previous_data["same_server"] = players_signature
 
-                presences.pop(a, None)
+                presences.pop(main_user, None)
             else:
                 previous_data["same_server"] = None
 
@@ -233,11 +226,11 @@ async def check_players():
         for friendly_name, (status, presence_type, color) in presences.items():
             if previous_data.get(friendly_name) != status:
                 mention = (friendly_name == "kei_lanii44" and presence_type in [2, 3])
-                send_embed("Presence Update", status, color, mention_everyone=mention)
+                await send_embed(channel, "Presence Update", status, color, mention_everyone=mention)
                 previous_data[friendly_name] = status
+
         # Wait once per loop
         await asyncio.sleep(20)
-
 
 @bot.event
 async def on_ready():
