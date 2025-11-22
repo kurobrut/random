@@ -150,76 +150,87 @@ async def send_embed(channel, title, description, color, mention_everyone=False)
 async def check_players():
     global previous_data
 
-    id_list = list(target_users.values())
-    if not id_list:
-        print("[Warning] No valid user IDs to check")
-        return
+    await bot.wait_until_ready()
+    channel = bot.get_channel(CHANNEL_ID)
 
-    res = safe_request("POST", "https://presence.roblox.com/v1/presence/users",
-                       json={"userIds": id_list}, headers=HEADERS)
-    if not res or res.status_code != 200:
-        print("[Error] Presence API failed")
-        return
+    while not bot.is_closed():
+        id_list = list(target_users.values())
+        if not id_list:
+            await asyncio.sleep(20)
+            continue
 
-    response = res.json()
-    users_in_games = {}
-    presences = {}
-    place_ids = {}
+        res = safe_request(
+            "POST",
+            "https://presence.roblox.com/v1/presence/users",
+            json={"userIds": id_list},
+            headers=HEADERS
+        )
+        if not res or res.status_code != 200:
+            await asyncio.sleep(20)
+            continue
 
-    for presence in response.get("userPresences", []):
-        uid = presence["userId"]
-        friendly_name = next((name for name, id_ in target_users.items() if id_ == uid), f"User_{uid}")
-        username = get_username(uid)
-        presence_type = presence.get("userPresenceType")
-        game_id = presence.get("gameId")
-        place_id = presence.get("placeId")
+        response = res.json()
+        users_in_games = {}
+        presences = {}
+        place_ids = {}
 
-        status = ""
-        color = COLORS["offline"]
+        for presence in response.get("userPresences", []):
+            uid = presence["userId"]
+            friendly_name = next((name for name, id_ in target_users.items() if id_ == uid), f"User_{uid}")
+            username = get_username(uid)
+            presence_type = presence.get("userPresenceType")
+            game_id = presence.get("gameId")
+            place_id = presence.get("placeId")
 
-        if presence_type in [2, 3]:
-            game_name, game_url = get_game_name_from_place(place_id) if place_id else ("Unknown Game", "")
-            status = f"🎮 {username} is playing: {game_name}\n🔗 {game_url}"
-            color = COLORS["playing"]
-            if game_id:
-                users_in_games[friendly_name] = game_id
-                place_ids[friendly_name] = place_id
-        elif presence_type == 1:
-            status = f"🟢 {username} is online (not in game)"
-            color = COLORS["online"]
-        elif presence_type == 0:
-            status = f"🔴 {username} is offline"
+            status = ""
             color = COLORS["offline"]
 
-        presences[friendly_name] = (status, presence_type, color)
+            if presence_type in [2, 3]:
+                game_name, game_url = get_game_name_from_place(place_id) if place_id else ("Unknown Game", "")
+                status = f"🎮 {username} is playing: {game_name}\n🔗 {game_url}"
+                color = COLORS["playing"]
+                if game_id:
+                    users_in_games[friendly_name] = game_id
+                    place_ids[friendly_name] = place_id
+            elif presence_type == 1:
+                status = f"🟢 {username} is online (not in game)"
+                color = COLORS["online"]
+            elif presence_type == 0:
+                status = f"🔴 {username} is offline"
+                color = COLORS["offline"]
 
-    # --- Same server check for kei_lanii44 ---
-    main_user = "kei_lanii44"
-    if main_user in users_in_games:
-        same_server_players = {
-            other for other, gid in users_in_games.items()
-            if other != main_user and gid == users_in_games[main_user]
-        }
+            presences[friendly_name] = (status, presence_type, color)
 
-        if same_server_players:
-            game_name, game_url = get_game_name_from_place(place_ids[main_user]) if main_user in place_ids else ("Unknown Game", "")
-            players_signature = tuple(sorted(same_server_players))
-            if previous_data.get("same_server") != players_signature:
-                others_list = ", ".join(same_server_players)
-                description = f"{main_user} is in the same server with:\n👥 {others_list}\n\n🎮 Game: {game_name}\n🔗 {game_url}"
-                bot.loop.create_task(send_embed(bot.get_channel(CHANNEL_ID), "🎯 Target Match", description, COLORS["same_server"], mention_everyone=True))
-                previous_data["same_server"] = players_signature
-        else:
-            previous_data["same_server"] = None
+        # --- Same server check for kei_lanii44 ---
+        main_user = "kei_lanii44"
+        if main_user in users_in_games:
+            same_server_players = {
+                other for other, gid in users_in_games.items()
+                if other != main_user and gid == users_in_games[main_user]
+            }
 
-    # --- Send normal presence updates (include kei_lanii44) ---
-    for friendly_name, (status, presence_type, color) in presences.items():
-        if previous_data.get(friendly_name) != status:
-            mention = (friendly_name == "kei_lanii44" and presence_type in [2, 3])
-            bot.loop.create_task(send_embed(bot.get_channel(CHANNEL_ID), "Presence Update", status, color, mention_everyone=mention))
-            previous_data[friendly_name] = status
+            if same_server_players:
+                game_name, game_url = get_game_name_from_place(place_ids[main_user]) if main_user in place_ids else ("Unknown Game", "")
+                players_signature = tuple(sorted(same_server_players))
+                if previous_data.get("same_server") != players_signature:
+                    others_list = ", ".join(same_server_players)
+                    description = f"{main_user} is in the same server with:\n👥 {others_list}\n\n🎮 Game: {game_name}\n🔗 {game_url}"
+                    await send_embed(channel, "🎯 Target Match", description, COLORS["same_server"], mention_everyone=True)
+                    previous_data["same_server"] = players_signature
+            else:
+                previous_data["same_server"] = None
 
+        # --- Send normal presence updates ---
+        for friendly_name, (status, presence_type, color) in presences.items():
+            # Only send if status changed
+            if previous_data.get(friendly_name) != status:
+                mention = (friendly_name == "kei_lanii44" and presence_type in [2, 3])
+                await send_embed(channel, "Presence Update", status, color, mention_everyone=mention)
+                previous_data[friendly_name] = status
+
+        # Wait once per loop
         await asyncio.sleep(20)
+
 
 @bot.event
 async def on_ready():
