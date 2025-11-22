@@ -13,8 +13,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ===== LOAD SECRETS FROM ENV =====
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID"))
-COOKIE = os.environ.get("COOKIE")  # Optional
+CHANNEL_ID = os.environ.get("CHANNEL_ID")
+COOKIE = os.environ.get("COOKIE")
+
+if not BOT_TOKEN or not CHANNEL_ID:
+    raise RuntimeError("Missing BOT_TOKEN or CHANNEL_ID environment variable!")
+
+CHANNEL_ID = int(CHANNEL_ID)
 
 HEADERS = {"Cookie": f".ROBLOSECURITY={COOKIE}", "Content-Type": "application/json"} if COOKIE else {}
 
