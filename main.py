@@ -7,7 +7,6 @@ import random
 import json
 import time
 from datetime import datetime, timezone
-import asyncio
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -97,41 +96,38 @@ def get_username(user_id):
 # ===== GAME INFO =====
 def get_game_name_from_place(place_id):
     place_id = str(place_id)
-    if place_id in place_cache and place_cache[place_id]["placeName"] != "Unknown Game":
-        return place_cache[place_id]["placeName"], place_cache[place_id]["url"]
+    if place_id in place_cache:
+        cached = place_cache[place_id]
+        return cached.get("placeName", "Unknown Game"), cached.get("url", f"https://www.roblox.com/games/{place_id}")
 
     url = f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={place_id}"
     res = safe_request("GET", url, headers=HEADERS)
     if res and res.status_code == 200:
         data = res.json()
-        if data:
+        if data and len(data) > 0:
             info = data[0]
-            game_name = info.get("name", "Unknown Game")
+            game_name = info.get("name") or "Unknown Game"
             safe_name = game_name.replace(" ", "-").replace("/", "-")
             game_url = f"https://www.roblox.com/games/{place_id}/{safe_name}"
             place_cache[place_id] = {
                 "placeId": place_id,
                 "placeName": game_name,
-                "universeId": info.get("universeId"),
-                "creatorName": info.get("creatorName"),
-                "creatorType": info.get("creatorType"),
                 "url": game_url,
                 "lastSeen": datetime.now(timezone.utc).isoformat()
             }
             save_cache()
             return game_name, game_url
 
+    # fallback
+    game_url = f"https://www.roblox.com/games/{place_id}"
     place_cache[place_id] = {
         "placeId": place_id,
         "placeName": "Unknown Game",
-        "universeId": None,
-        "creatorName": None,
-        "creatorType": None,
-        "url": f"https://www.roblox.com/games/{place_id}",
+        "url": game_url,
         "lastSeen": datetime.now(timezone.utc).isoformat()
     }
     save_cache()
-    return "Unknown Game", f"https://www.roblox.com/games/{place_id}"
+    return "Unknown Game", game_url
 
 # ===== DISCORD BOT =====
 intents = discord.Intents.default()
@@ -169,6 +165,7 @@ async def check_players():
     presences = {}
     place_ids = {}
 
+    # Collect presence info
     for presence in response.get("userPresences", []):
         uid = presence["userId"]
         friendly_name = next((name for name, id_ in target_users.items() if id_ == uid), f"User_{uid}")
@@ -178,7 +175,10 @@ async def check_players():
         place_id = presence.get("placeId")
 
         if presence_type in [2, 3]:
-            game_name, game_url = get_game_name_from_place(place_id) if place_id else ("Unknown Game", "")
+            if place_id:
+                game_name, game_url = get_game_name_from_place(place_id)
+            else:
+                game_name, game_url = "Unknown Game", f"https://www.roblox.com/games/{game_id or '0'}"
             status = f"🎮 {username} is playing: {game_name}\n🔗 {game_url}"
             color = COLORS["playing"]
             if game_id:
@@ -193,7 +193,7 @@ async def check_players():
 
         presences[friendly_name] = (status, presence_type, color)
 
-    # Check if kei_lanii44 is in the same server
+    # Check if kei_lanii44 is in the same server with anyone
     main_user = "kei_lanii44"
     if main_user in users_in_games:
         same_server_players = {
@@ -211,7 +211,7 @@ async def check_players():
         else:
             previous_data["same_server"] = None
 
-    # Send normal presence updates only on status change
+    # Send normal presence updates (only on change)
     for friendly_name, (status, presence_type, color) in presences.items():
         if previous_data.get(friendly_name) != status:
             mention = (friendly_name == "kei_lanii44" and presence_type in [2, 3])
@@ -221,7 +221,7 @@ async def check_players():
 @bot.event
 async def on_ready():
     print(f"[Bot] Logged in as {bot.user}")
-    # Do a single presence check on startup
+    # Run presence check once on startup
     await check_players()
 
 bot.run(BOT_TOKEN)
