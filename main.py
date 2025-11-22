@@ -24,7 +24,7 @@ CHANNEL_ID = int(CHANNEL_ID)
 HEADERS = {"Cookie": f".ROBLOSECURITY={COOKIE}", "Content-Type": "application/json"} if COOKIE else {}
 
 # ===== TARGET USERS =====
-TARGET_USERS = {
+target_users = {
     "kei_lanii44": 2030589429,
     "karofr2": 4383142978,
     "jared_0834": 1914569614,
