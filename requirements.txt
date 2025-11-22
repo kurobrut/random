@@ -1,4 +1,4 @@
 requests==2.31.0
 urllib3==2.0.6
-discord.py==2.3.3
+discord.py==2.3.2
 python-dotenv==1.1.1
