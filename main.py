@@ -1,17 +1,16 @@
-# bot_notifier.py
+# bot_notifier_botmode.py
 import os
 import json
-import time
-import random
-import requests
-import urllib3
-from datetime import datetime, timezone
 import asyncio
-from typing import Tuple, Dict, Any
 import traceback
+from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands, tasks
+import requests
+import urllib3
+import random
+import time
 
 # disable insecure warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -20,16 +19,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 with open("config.json", "r") as f:
     config = json.load(f)
 
-# config fields (expected)
-webhook_urls = config.get("webhook_urls") or [config.get("webhook_url")]
-ratelimit_webhook_url = config.get("ratelimit_webhook_url")
-target_users: Dict[str, int] = config.get("target_users", {})
+target_users = config.get("target_users", {})
 cookie = config.get("cookie")
-
-# ===== ENV =====
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))  # must set in GitHub secrets
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("Missing BOT_TOKEN environment variable!")
+if not BOT_TOKEN or not CHANNEL_ID:
+    raise RuntimeError("BOT_TOKEN or CHANNEL_ID not set in env!")
 
 # ===== HEADERS / GLOBALS =====
 HEADERS = {
@@ -41,9 +36,7 @@ COLORS = {
     "playing": 0x77dd77,
     "online": 0x89CFF0,
     "offline": 0xFF6961,
-    "same_server": 0x9b59b6,
-    "ratelimit": 0xFFA500,
-    "renewal": 0xF1C40F
+    "same_server": 0x9b59b6
 }
 
 CACHE_FILE = "place_cache.json"
@@ -58,138 +51,60 @@ if os.path.exists(CACHE_FILE):
 else:
     place_cache = {}
 
-def _save_cache_sync():
-    try:
-        with open(CACHE_FILE, "w") as f:
-            json.dump(place_cache, f, indent=2)
-    except Exception as e:
-        print("[Error] saving cache:", e)
+def save_cache_sync():
+    with open(CACHE_FILE, "w") as f:
+        json.dump(place_cache, f, indent=2)
 
 async def save_cache():
-    await asyncio.to_thread(_save_cache_sync)
+    await asyncio.to_thread(save_cache_sync)
 
-previous_data: Dict[str, Any] = {}
-notified_pair = False
+previous_data = {}
 
-# ===== Rate limit cooldown trackers (sync-state) =====
-last_rate_limit_sent = {"roblox": 0.0, "discord": 0.0}
-
-# ---------- Blocking helpers (run in thread) ----------
-def _send_rate_limit_alert_sync(api_name: str, description: str):
-    """Send a rate-limit embed via ratelimit_webhook_url (blocking)."""
-    try:
-        now = time.time()
-        if now - last_rate_limit_sent.get(api_name, 0) < 60:
-            # cooldown (do not spam alerts)
-            print(f"[Rate Limit] {api_name} hit, but cooldown active. Skipping Discord alert.")
-            return
-
-        alert_payload = {
-            "embeds": [{
-                "title": f"⚠️ {api_name.capitalize()} API Rate Limit",
-                "description": description,
-                "color": COLORS["ratelimit"],
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }]
-        }
-        if ratelimit_webhook_url:
-            r = requests.post(ratelimit_webhook_url, json=alert_payload, timeout=10)
-            print(f"[Rate Limit] Alert sent for {api_name} (status {r.status_code})")
-        else:
-            print("[Rate Limit] No ratelimit_webhook_url configured; skipping send.")
-        last_rate_limit_sent[api_name] = now
-    except Exception as e:
-        print(f"[Error] Failed to send rate limit alert: {e}")
-
-def _safe_discord_request_sync(payload: dict, webhook: str) -> requests.Response:
-    """Send to a webhook with builtin discord-ratelimit retry (blocking)."""
-    while True:
-        try:
-            r = requests.post(webhook, json=payload, timeout=10)
-        except Exception as e:
-            print(f"[Error] Discord webhook post failed: {e}. Retrying shortly...")
-            time.sleep(1 + random.random())
-            continue
-
-        if r.status_code == 429:
-            try:
-                data = r.json()
-                retry_after = data.get("retry_after", 1)
-            except Exception:
-                retry_after = 1
-            print(f"[Discord Rate Limit] Waiting {retry_after}s before retrying...")
-            _send_rate_limit_alert_sync("discord", f"Retrying after **{retry_after}** seconds")
-            time.sleep(retry_after)
-            continue
-        return r
-
-def _safe_request_sync(method: str, url: str, **kwargs) -> requests.Response:
-    """Blocking safe request with retry/backoff and roblox rate-limit handling."""
+# ===== SAFE REQUEST =====
+def safe_request_sync(method: str, url: str, **kwargs):
     retries = 0
     base_delay = 1
     max_delay = 60
     while True:
         try:
             r = requests.request(method, url, verify=False, timeout=10, **kwargs)
-
-            # roblox rate limit
             if r.status_code == 429 or r.headers.get("x-ratelimit-remaining") == "0":
-                try:
-                    reset_time = int(r.headers.get("x-ratelimit-reset", 2))
-                except Exception:
-                    reset_time = 2
+                reset_time = int(r.headers.get("x-ratelimit-reset", 2))
                 wait = reset_time + random.uniform(0.5, 1.5)
-                print(f"[Roblox Rate Limit] Waiting {wait:.1f}s... ({url})")
-                _send_rate_limit_alert_sync("roblox", f"Endpoint: `{url}`\nRetrying after **{wait:.1f}s**")
+                print(f"[Roblox Rate Limit] Waiting {wait:.1f}s for {url}")
                 time.sleep(wait)
                 continue
-
-            # server errors
             if 500 <= r.status_code < 600:
                 wait = min(base_delay * (2 ** retries), max_delay) + random.uniform(0, 1)
-                print(f"[Server Error {r.status_code}] Retrying in {wait:.1f}s... ({url})")
+                print(f"[Server Error {r.status_code}] Retrying in {wait:.1f}s")
                 time.sleep(wait)
                 retries += 1
                 continue
-
             return r
-        except requests.ConnectionError as e:
-            wait = min(base_delay * (2 ** retries), max_delay) + random.uniform(0, 1)
-            print(f"[Connection Error] {e} - Retrying in {wait:.1f}s... ({url})")
-            time.sleep(wait)
-            retries += 1
         except requests.RequestException as e:
             wait = min(base_delay * (2 ** retries), max_delay) + random.uniform(0, 1)
-            print(f"[Request Error] {e} - Retrying in {wait:.1f}s... ({url})")
+            print(f"[Request Error] {e} - retrying in {wait:.1f}s")
             time.sleep(wait)
             retries += 1
 
-# ---------- Async wrappers that call blocking helpers in thread ----------
-async def send_rate_limit_alert(api_name: str, description: str):
-    await asyncio.to_thread(_send_rate_limit_alert_sync, api_name, description)
+async def safe_request(method: str, url: str, **kwargs):
+    return await asyncio.to_thread(safe_request_sync, method, url, **kwargs)
 
-async def safe_discord_request(payload: dict, webhook: str):
-    return await asyncio.to_thread(_safe_discord_request_sync, payload, webhook)
-
-async def safe_request(method: str, url: str, **kwargs) -> requests.Response:
-    return await asyncio.to_thread(_safe_request_sync, method, url, **kwargs)
-
-# ---------- Username & game helpers ----------
+# ===== USERNAME & GAME HELPERS =====
 async def get_username(user_id: int) -> str:
     url = f"https://users.roblox.com/v1/users/{user_id}"
     try:
         res = await safe_request("GET", url, headers=HEADERS)
         if res and res.status_code == 200:
             return res.json().get("name", f"User_{user_id}")
-    except Exception as e:
-        print("[Error] get_username:", e)
+    except Exception:
+        pass
     return f"User_{user_id}"
 
-async def get_game_name_from_place(place_id) -> Tuple[str, str]:
+async def get_game_name_from_place(place_id):
     place_id = str(place_id)
     if place_id in place_cache and place_cache[place_id].get("placeName") != "Unknown Game":
         return place_cache[place_id]["placeName"], place_cache[place_id]["url"]
-
     url = f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={place_id}"
     try:
         res = await safe_request("GET", url, headers=HEADERS)
@@ -211,9 +126,8 @@ async def get_game_name_from_place(place_id) -> Tuple[str, str]:
                 }
                 await save_cache()
                 return game_name, game_url
-    except Exception as e:
-        print("[Error] get_game_name_from_place:", e)
-
+    except Exception:
+        pass
     place_cache[place_id] = {
         "placeId": place_id,
         "placeName": "Unknown Game",
@@ -226,57 +140,34 @@ async def get_game_name_from_place(place_id) -> Tuple[str, str]:
     await save_cache()
     return "Unknown Game", f"https://www.roblox.com/games/{place_id}"
 
-# ---------- Webhook sender (async) ----------
-MY_ID_MENTION = config.get("my_id_mention") or ""  # if you want a mention, set this id in config
+# ===== BOT SETUP =====
+intents = discord.Intents.default()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-async def send_embed(title: str, description: str, color: int, mention_everyone: bool = False):
-    content = f"<@{MY_ID_MENTION}>" if mention_everyone and MY_ID_MENTION else ""
-    payload = {
-        "content": content,
-        "embeds": [{
-            "title": title,
-            "description": description,
-            "color": color,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }]
-    }
-
-    if not webhook_urls:
-        print("[Warning] No webhook URLs configured.")
+async def send_embed(title: str, description: str, color: int, channel_id: int = CHANNEL_ID):
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        print("[Error] Channel not found")
         return
+    embed = discord.Embed(title=title, description=description, color=color, timestamp=datetime.now(timezone.utc))
+    await channel.send(embed=embed)
 
-    # send to all webhooks (sequentially). They themselves handle discord rate limits.
-    for webhook in webhook_urls:
-        try:
-            r = await safe_discord_request(payload, webhook)
-            if r is not None:
-                # debug
-                print(f"[Webhook] Sent '{title}' to webhook (status {r.status_code})")
-        except Exception as e:
-            print(f"[Error] sending embed to webhook {webhook}: {e}")
-
-# ---------- Core check_players (async) ----------
+# ===== CORE CHECK PLAYERS =====
 async def check_players():
-    global notified_pair, previous_data
-
+    global previous_data
     try:
         id_list = list(target_users.values())
         if not id_list:
-            print("[Warning] No valid user IDs to check")
+            print("[Warning] No valid user IDs")
             return
-
-        res = await safe_request("POST", "https://presence.roblox.com/v1/presence/users",
-                                 json={"userIds": id_list}, headers=HEADERS)
+        res = await safe_request("POST", "https://presence.roblox.com/v1/presence/users", json={"userIds": id_list}, headers=HEADERS)
         if not res or res.status_code != 200:
-            print("[Error] Presence API failed", getattr(res, "status_code", None))
+            print("[Error] Presence API failed")
             return
-
         response = res.json()
-        users_in_games: Dict[str, int] = {}
-        presences: Dict[str, tuple] = {}
-        place_ids: Dict[str, Any] = {}
-
-        # Prepare statuses
+        users_in_games = {}
+        presences = {}
+        place_ids = {}
         for presence in response.get("userPresences", []):
             uid = presence["userId"]
             friendly_name = next((name for name, id_ in target_users.items() if id_ == uid), f"User_{uid}")
@@ -284,11 +175,9 @@ async def check_players():
             presence_type = presence.get("userPresenceType")
             game_id = presence.get("gameId")
             place_id = presence.get("placeId")
-
             status = ""
             color = COLORS["offline"]
-
-            if presence_type in [2, 3]:
+            if presence_type in [2,3]:
                 game_name, game_url = await get_game_name_from_place(place_id) if place_id else ("Unknown Game", "")
                 status = f"🎮 {username} is playing: {game_name}\n🔗 {game_url}"
                 color = COLORS["playing"]
@@ -298,68 +187,44 @@ async def check_players():
             elif presence_type == 1:
                 status = f"🟢 {username} is online (not in game)"
                 color = COLORS["online"]
-            else:
-                status = f"🔴 {username} is offline"
-                color = COLORS["offline"]
-
             presences[friendly_name] = (status, presence_type, color)
 
-        # === Same server check for particular target (kei_lanii44) ===
         a = "kei_lanii44"
         if a in users_in_games:
-            same_server_players = {
-                other for other, gid in users_in_games.items()
-                if other != a and gid == users_in_games[a]
-            }
-
+            same_server_players = {other for other,gid in users_in_games.items() if other!=a and gid==users_in_games[a]}
             if same_server_players:
-                game_name, game_url = await get_game_name_from_place(place_ids[a]) if a in place_ids else ("Unknown Game", "")
+                game_name, game_url = await get_game_name_from_place(place_ids[a]) if a in place_ids else ("Unknown Game","")
                 players_signature = tuple(sorted(same_server_players))
                 if previous_data.get("same_server") != players_signature:
                     others_list = ", ".join(same_server_players)
-                    description = (
-                        f"{a} is in the same server with:\n"
-                        f"👥 {others_list}\n\n"
-                        f"🎮 Game: {game_name}\n🔗 {game_url}"
-                    )
-                    # mention flag: your config's "my_id_mention" will be used if set
-                    await send_embed("🎯 Target Match", description, COLORS["same_server"], mention_everyone=True)
+                    description = f"{a} is in the same server with:\n👥 {others_list}\n\n🎮 Game: {game_name}\n🔗 {game_url}"
+                    await send_embed("🎯 Target Match", description, COLORS["same_server"])
                     previous_data["same_server"] = players_signature
-
-                # don't send individual updates for the matched user
                 presences.pop(a, None)
             else:
                 previous_data["same_server"] = None
 
-        # --- Send normal presence updates ---
         for friendly_name, (status, presence_type, color) in presences.items():
             if previous_data.get(friendly_name) != status:
-                mention = (friendly_name == "kei_lanii44" and presence_type in [2, 3])
-                await send_embed("Presence Update", status, color, mention_everyone=mention)
+                mention = (friendly_name == "kei_lanii44" and presence_type in [2,3])
+                await send_embed("Presence Update", status, color)
                 previous_data[friendly_name] = status
 
-    except Exception as e:
-        print("[Error] check_players failed:", e)
+    except Exception:
         traceback.print_exc()
 
-# ---------- Bot setup & loop ----------
-intents = discord.Intents.default()
-intents.messages = True  # not strictly needed, but safe to include
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-
+# ===== LOOP =====
 @tasks.loop(seconds=20)
 async def monitor_loop():
-    # monitor_loop runs inside the event loop and calls async check
     await check_players()
 
 @bot.event
 async def on_ready():
-    print(f"[Bot] Logged in as {bot.user} (id {bot.user.id})")
+    print(f"[Bot] Logged in as {bot.user}")
     if not monitor_loop.is_running():
         monitor_loop.start()
 
-# optional command to force-run check
+# optional command
 @bot.command(name="checknow")
 @commands.is_owner()
 async def cmd_checknow(ctx):
@@ -369,9 +234,4 @@ async def cmd_checknow(ctx):
 
 # run bot
 if __name__ == "__main__":
-    try:
-        bot.run(BOT_TOKEN)
-    except KeyboardInterrupt:
-        print("Shutting down...")
-    except Exception as e:
-        print("Failed to start bot:", e)
+    bot.run(BOT_TOKEN)
