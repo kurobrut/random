@@ -19,7 +19,7 @@ with open("config.json") as f:
 target_users = config["target_users"]
 cookie = config.get("cookie")
 
-previous_data = {}
+previous_data = {}      # <-- Caches last sent presence messages
 notified_pair = False
 
 HEADERS = {
@@ -140,10 +140,10 @@ def get_game_name_from_place(place_id):
     return "Unknown Game", f"https://www.roblox.com/games/{place_id}"
 
 # =============================================================
-#         CHECK PLAYERS (NO WEBHOOKS — ONLY INTERNAL LOGGING)
+#         CHECK PLAYERS (NO WEBHOOKS — SEND EMBED ONLY ON CHANGE)
 # =============================================================
-def check_players():
-    global notified_pair, previous_data
+async def check_players(bot, channel_id):
+    global previous_data
 
     id_list = list(target_users.values())
     if not id_list:
@@ -155,65 +155,53 @@ def check_players():
         json={"userIds": id_list},
         headers=HEADERS
     )
-
     if not res or res.status_code != 200:
         return
 
     response = res.json()
-    users_in_games = {}
-    presences = {}
-    place_ids = {}
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        print("Invalid channel.")
+        return
 
     for presence in response.get("userPresences", []):
         uid = presence["userId"]
         friendly_name = next((n for n, i in target_users.items() if i == uid), f"User_{uid}")
         username = get_username(uid)
+
         presence_type = presence["userPresenceType"]
         game_id = presence.get("gameId")
         place_id = presence.get("placeId")
 
-        if presence_type in [2, 3]:
+        # Determine status
+        if presence_type in [2, 3]:  # Playing
             game_name, game_url = get_game_name_from_place(place_id)
-            status = f"🎮 {username} is playing {game_name}"
+            status = f"🎮 **{username} is playing {game_name}**"
             color = COLORS["playing"]
-            users_in_games[friendly_name] = game_id
-            place_ids[friendly_name] = place_id
 
-        elif presence_type == 1:
-            status = f"🟢 {username} is online"
+        elif presence_type == 1:  # Online
+            status = f"🟢 **{username} is online (not in game)**"
             color = COLORS["online"]
 
-        else:
-            status = f"🔴 {username} is offline"
+        else:  # Offline
+            status = f"🔴 **{username} is offline**"
             color = COLORS["offline"]
 
-        presences[friendly_name] = (status, presence_type, color)
-
-    # === Same Server Detection (no webhook) ===
-    target = "kei_lanii44"
-
-    if target in users_in_games:
-        same_server = {
-            other for other, gid in users_in_games.items()
-            if other != target and gid == users_in_games[target]
-        }
-
-        if same_server:
-            print(f"[MATCH] {target} is in the same server with {same_server}")
-
-            previous_data["same_server"] = tuple(sorted(same_server))
-            presences.pop(target, None)
-        else:
-            previous_data["same_server"] = None
-
-    # === Log presence changes locally ===
-    for friendly_name, (status, presence_type, color) in presences.items():
+        # Send embed ONLY if status changed
         if previous_data.get(friendly_name) != status:
-            print(f"[Update] {status}")
             previous_data[friendly_name] = status
 
+            embed = discord.Embed(
+                title="Presence Update",
+                description=status,
+                color=color
+            )
+            embed.timestamp = datetime.now(timezone.utc)
+
+            await channel.send(embed=embed)
+
 # =============================================================
-#             DISCORD BOT SETUP (async, NO WEBHOOK)
+#             DISCORD BOT SETUP
 # =============================================================
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -224,10 +212,10 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 @bot.event
 async def on_ready():
     print(f"[Bot] Logged in as {bot.user}")
-    monitor_loop.start()
+    presence_monitor.start()
 
 @tasks.loop(seconds=20)
-async def monitor_loop():
-    await bot.loop.run_in_executor(None, check_players)
+async def presence_monitor():
+    await check_players(bot, CHANNEL_ID)
 
 bot.run(BOT_TOKEN)
